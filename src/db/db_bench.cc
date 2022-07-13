@@ -112,10 +112,6 @@ static int FLAGS_read_threads = 1;
 // Size of each value
 static int FLAGS_value_size = 1024;
 
-static std::string FLAGS_ycsb_workload = "ycsb_workload/workloada";
-static uint64_t FLAGS_load_num = 25 * 1000 * 1000;
-static uint64_t FLAGS_running_num = 25 * 1000 * 1000;
-
 // Arrange to generate values that shrink to this fraction of
 // their original size after compression
 static double FLAGS_compression_ratio = 0.5;
@@ -155,7 +151,78 @@ static bool FLAGS_use_existing_db = false;
 // Use the db with the following name.
 static const char *FLAGS_db = NULL;
 
+static leveldb::Env *FLAGS_env;
+static int FLAGS_duration = 0;
+static int FLAGS_load_duration = 0;
+static uint64_t FLAGS_load_num = 25 * 1000 * 1000;
+static uint64_t FLAGS_running_num = 25 * 1000 * 1000;
+static std::string FLAGS_ycsb_workload = "ycsb_workload/workloadc";
+
 namespace leveldb {
+  class Duration {
+  public:
+    Duration(uint64_t max_seconds, int64_t max_ops, int64_t ops_per_stage = 0) {
+     max_seconds_ = max_seconds;
+     max_ops_ = max_ops;
+     ops_per_stage_ = (ops_per_stage > 0) ? ops_per_stage : max_ops;
+     ops_ = 0;
+     start_at_ = FLAGS_env->NowMicros();
+    }
+
+    int64_t GetStage() { return std::min(ops_, max_ops_ - 1) / ops_per_stage_; }
+
+    bool Done(int64_t increment) {
+     if (increment <= 0) increment = 1;  // avoid Done(0) and infinite loops
+     ops_ += increment;
+
+     if (max_seconds_) {
+      // Recheck every appx 1000 ops (exact iff increment is factor of 1000)
+      auto granularity = 1000;
+      if ((ops_ / granularity) != ((ops_ - increment) / granularity)) {
+       uint64_t now = FLAGS_env->NowMicros();
+       return ((now - start_at_) / 1000000) >= max_seconds_;
+      } else {
+       return false;
+      }
+     } else {
+      return ops_ > max_ops_;
+     }
+    }
+
+    uint64_t max_seconds_;
+    int64_t max_ops_;
+    int64_t ops_per_stage_;
+    int64_t ops_;
+    uint64_t start_at_;
+  };
+
+  enum OperationType : unsigned char {
+    kRead = 0,
+    kWrite,
+    kDelete,
+    kSeek,
+    kMerge,
+    kUpdate,
+    kReadModifyWrite,
+    kCompress,
+    kUncompress,
+    kCrc,
+    kHash,
+    kOthers
+  };
+  static std::unordered_map<OperationType, std::string, std::hash<unsigned char>>
+      OperationTypeString = {{kRead,            "read"},
+                             {kWrite,           "write"},
+                             {kDelete,          "delete"},
+                             {kSeek,            "seek"},
+                             {kMerge,           "merge"},
+                             {kUpdate,          "update"},
+                             {kReadModifyWrite, "read-modify-write"},
+                             {kCompress,        "compress"},
+                             {kCompress,        "uncompress"},
+                             {kCrc,             "crc"},
+                             {kHash,            "hash"},
+                             {kOthers,          "op"}};
 
   namespace {
 
@@ -222,7 +289,9 @@ namespace leveldb {
       double last_op_finish_;
       Histogram hist_;
       std::string message_;
-
+      std::unordered_map<OperationType, std::shared_ptr<Histogram>,
+          std::hash<unsigned char>>
+          hist_s;
     public:
       Stats()
           : start_(),
@@ -233,7 +302,7 @@ namespace leveldb {
             bytes_(),
             last_op_finish_(),
             hist_(),
-            message_() {
+            message_(), hist_s() {
        Start();
       }
 
@@ -296,6 +365,51 @@ namespace leveldb {
        }
       }
 
+      void FinishedOps(DB *db, int64_t num_ops,
+                       enum OperationType op_type = kOthers) {
+//       if (reporter_agent_) {
+//        reporter_agent_->ReportFinishedOps(num_ops);
+//       }
+       if (FLAGS_histogram) {
+        uint64_t now = FLAGS_env->NowMicros();
+        uint64_t micros = now - last_op_finish_;
+
+        if (hist_s.find(op_type) == hist_s.end()) {
+         auto hist_temp = std::make_shared<Histogram>();
+         hist_s.insert({op_type, std::move(hist_temp)});
+        }
+        hist_s[op_type]->Add(micros);
+
+        if (micros > 20000) {
+         fprintf(stderr, "long op: %lld micros%30s\r", micros, "");
+         fflush(stderr);
+        }
+        last_op_finish_ = now;
+       }
+
+       done_ += num_ops;
+
+       if (done_ >= next_report_) {
+
+        if (next_report_ < 1000)
+         next_report_ += 100;
+        else if (next_report_ < 5000)
+         next_report_ += 500;
+        else if (next_report_ < 10000)
+         next_report_ += 1000;
+        else if (next_report_ < 50000)
+         next_report_ += 5000;
+        else if (next_report_ < 100000)
+         next_report_ += 10000;
+        else if (next_report_ < 500000)
+         next_report_ += 50000;
+        else
+         next_report_ += 100000;
+        fprintf(stderr, "... finished %lld ops%30s\r", done_, "");
+        fflush(stderr);
+       }
+      }
+
       void AddBytes(int64_t n) {
        bytes_ += n;
       }
@@ -327,6 +441,14 @@ namespace leveldb {
        }
        fflush(stdout);
       }
+
+      void ReportYCSBHist() {
+       for (auto it = hist_s.begin(); it != hist_s.end(); ++it) {
+        fprintf(stdout, "Microseconds per %s:\n%s\n",
+                OperationTypeString[it->first].c_str(),
+                it->second->ToString().c_str());
+       }
+      }
     };
 
 // State shared by all concurrent executions of the same benchmark.
@@ -355,19 +477,28 @@ namespace leveldb {
       }
     };
 
+
 // Per-thread state for concurrent executions of the same benchmark.
     struct ThreadState {
       int tid;             // 0..n-1 when running in n threads
       Random rand;         // Has different seeds for different threads
       Stats stats;
       SharedState *shared;
+      uint64_t last_op_finish_ = 0;
+      uint64_t done_;
+      uint64_t last_report_done_;
+      uint64_t next_report_;
+      uint64_t bytes_;
+      uint64_t last_report_finish_;
+
 
       ThreadState(int index)
           : tid(index),
             rand(1000 + index),
             stats(),
-            shared() {
+            shared(), done_(0), last_report_done_(0), next_report_(0), bytes_(0), last_report_finish_(0) {
       }
+
 
     private:
       ThreadState(const ThreadState &);
@@ -866,7 +997,12 @@ namespace leveldb {
       int num_threads = FLAGS_threads;
 
       if (name == Slice("ycsb")) {
-       method = &Benchmark::YCSB;
+       method = &Benchmark::YCSBIntegrate;
+      } else if (name == Slice("ycsb_load")) {
+       method = &Benchmark::YCSBLoader;
+      } else if (name == Slice("ycsb_run")) {
+       FLAGS_use_existing_db = true;
+       method = &Benchmark::YCSBRunner;
       } else if (name == Slice("fillseq")) {
        fresh_db = true;
        method = &Benchmark::WriteSeq;
@@ -1619,159 +1755,133 @@ namespace leveldb {
      ycsbc::utils::Properties props;
      InitWorkload(wl, props);
      std::cout << "start YCSB" << std::endl;
-//     YCSBWorking(thread, &wl, true, false);
+     YCSBWorking(thread, &wl, true, false);
     }
+
 //
-//    void YCSBRunner(ThreadState *thread) {
-//     ycsbc::CoreWorkload wl;
-//     ycsbc::utils::Properties props;
-//     InitWorkload(wl, props);
-//     YCSBWorking(thread, &wl, false, true);
-//    }
+    void YCSBRunner(ThreadState *thread) {
+     ycsbc::CoreWorkload wl;
+     ycsbc::utils::Properties props;
+     InitWorkload(wl, props);
+     YCSBWorking(thread, &wl, false, true);
+    }
+
 //
-//    void YCSBIntegrate(ThreadState *thread) {
-//     ycsbc::CoreWorkload wl;
-//     ycsbc::utils::Properties props;
-//     InitWorkload(wl, props);
-//     YCSBWorking(thread, &wl, true, true);
-//    }
-//
-//    void YCSBWorking(ThreadState *thread, ycsbc::CoreWorkload *workload, int load,
-//                     int run) {
-//     int remain_loading = FLAGS_load_num;
-//     int remain_running = FLAGS_running_num;
-//     const int test_duration = FLAGS_duration;
-//     int64_t ops_per_stage = 1;
-//
-//     // load first, then run
-//     Duration loading_duration(FLAGS_load_duration, remain_loading,
-//                               ops_per_stage);
-//     Duration running_duration(test_duration, remain_running, ops_per_stage);
-//     int stage = 0;
-//     //    WriteBatch batch;
-//     Status s;
-//     RandomGenerator gen;
-//     int64_t bytes = 0;
-//     Duration duration = loading_duration;
-//     rocksdb::ReadOptions r_op;
-//     rocksdb::WriteOptions w_op;
-//
-//     if (load) {
-//      while (!duration.Done(entries_per_batch_)) {
-//       DB *db = SelectDB(thread);
-//       if (duration.GetStage() != stage) {
-//        stage = duration.GetStage();
-//        if (db_.db != nullptr) {
-//         db_.CreateNewCf(open_options_, stage);
-//        } else {
-//         for (auto &input_db: multi_dbs_) {
-//          input_db.CreateNewCf(open_options_, stage);
-//         }
-//        }
-//       }
-//       std::string key = workload->BuildKeyName();
-//       Slice val = gen.Generate();
-//       db_.db->Put(w_op, key, val);
-//
-//       int64_t batch_bytes = 0;
-//       for (int64_t j = 0; j < entries_per_batch_; j++) {
-//        batch_bytes += val.size() + key.size();
-//        bytes += val.size() + key.size();
-//       }
-//       if (thread->shared->write_rate_limiter.get() != nullptr) {
-//        thread->shared->write_rate_limiter->Request(
-//            batch_bytes, Env::IO_HIGH, nullptr /* stats */,
-//            RateLimiter::OpType::kWrite);
-//        thread->stats.ResetLastOpTime();
-//       }
-//       thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kWrite);
-//      }
-//      thread->stats.AddBytes(bytes);
-//     }
-//
-//     if (run) {
-//      duration = running_duration;
-//
-//      Status op_status;
-//      int read_count = 0;
-//      int found_count = 0;
-//      int blind_updates = 0;
-//      while (!duration.Done(1)) {
-//       if (duration.GetStage() != stage) {
-//        stage = duration.GetStage();
-//        if (db_.db != nullptr) {
-//         db_.CreateNewCf(open_options_, stage);
-//        } else {
-//         for (auto &db: multi_dbs_) {
-//          db.CreateNewCf(open_options_, stage);
-//         }
-//        }
-//       }
-//       std::string data;
-//       uint64_t key_num = workload->NextTransactionKeyNum();
-//       const std::string key = workload->BuildKeyName(key_num);
-//       DB *db = SelectDB(thread);
-//       switch (workload->NextOp()) {
-//        case ycsbc::READ: {
-//         op_status = db_.db->Get(r_op, key, &data);
-//         if (op_status.ok()) {
-//          found_count++;
-//          bytes += key.size() + data.size();
-//         }
-//         read_count++;
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kRead);
-//        }
-//         break;
-//        case ycsbc::UPDATE: {
-//         Slice val = gen.Generate();
-//         // In rocksdb, update is just another put operation.
-//         op_status = db_.db->Put(w_op, key, val);
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kUpdate);
-//        }
-//         break;
-//        case ycsbc::INSERT: {
-//         Slice val = gen.Generate();
-//         // In rocksdb, update is just another put operation.
-//         op_status = db_.db->Put(w_op, key, val);
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kWrite);
-//        }
-//         break;
-//        case ycsbc::SCAN: {
-//         Iterator *db_iter = db_.db->NewIterator(rocksdb::ReadOptions());
-//         db_iter->Seek(key);
-//         int len = workload->scan_len_chooser_->Next();
-//         for (int i = 0; db_iter->Valid() && i < len; i++) {
-//          data = db_iter->value().ToString();
-//          db_iter->Next();
-//         }
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kSeek);
-//         delete db_iter;
-//        }
-//         break;
-//        case ycsbc::READMODIFYWRITE: {
-//         op_status = db_.db->Get(r_op, key, &data);
-//         read_count++;
-//         if (op_status.IsNotFound()) {
-//          blind_updates++;
-//         }
-//         Slice val = gen.Generate();
-//         op_status = db_.db->Put(w_op, key, val);
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kUpdate);
-//        }
-//         break;
-//        case ycsbc::DELETE: {
-//         op_status = db_.db->Delete(w_op, key);
-//         thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kDelete);
-//        }
-//         break;
-//        case ycsbc::MAXOPTYPE:
-//         throw ycsbc::utils::Exception(
-//             "Operation request is not recognized!");
-//       }
-//      }
-//      thread->stats.AddBytes(bytes);
-//     }
-//    }
+    void YCSBIntegrate(ThreadState *thread) {
+     ycsbc::CoreWorkload wl;
+     ycsbc::utils::Properties props;
+     InitWorkload(wl, props);
+     YCSBWorking(thread, &wl, true, true);
+    }
+
+    void YCSBWorking(ThreadState *thread, ycsbc::CoreWorkload *workload, int load,
+                     int run) {
+     int remain_loading = FLAGS_load_num;
+     int remain_running = FLAGS_running_num;
+     const int test_duration = FLAGS_duration;
+     int64_t ops_per_stage = 1;
+
+     // load first, then run
+     Duration loading_duration(FLAGS_load_duration, remain_loading,
+                               ops_per_stage);
+     Duration running_duration(test_duration, remain_running, ops_per_stage);
+     int stage = 0;
+     //    WriteBatch batch;
+     Status s;
+     RandomGenerator gen;
+     int64_t bytes = 0;
+     Duration duration = loading_duration;
+     ReadOptions r_op;
+     WriteOptions w_op;
+
+     if (load) {
+      while (!duration.Done(entries_per_batch_)) {
+       DB *db = db_;
+       std::string key = workload->BuildKeyName();
+       Slice val = gen.Generate(FLAGS_value_size);
+       db_->Put(w_op, key, val);
+       thread->stats.FinishedOps(db, entries_per_batch_, kWrite);
+      }
+      thread->stats.AddBytes(bytes);
+     }
+
+     if (run) {
+      duration = running_duration;
+
+      Status op_status;
+      int read_count = 0;
+      int found_count = 0;
+      int blind_updates = 0;
+      while (!duration.Done(1)) {
+       if (duration.GetStage() != stage) {
+        stage = duration.GetStage();
+       }
+       std::string data;
+       uint64_t key_num = workload->NextTransactionKeyNum();
+       const std::string key = workload->BuildKeyName(key_num);
+       DB *db = db_;
+       switch (workload->NextOp()) {
+        case ycsbc::READ: {
+         op_status = db_->Get(r_op, key, &data);
+         if (op_status.ok()) {
+          found_count++;
+          bytes += key.size() + data.size();
+         }
+         read_count++;
+         thread->stats.FinishedOps(db, entries_per_batch_, kRead);
+        }
+         break;
+        case ycsbc::UPDATE: {
+         Slice val = gen.Generate(FLAGS_value_size);
+         // In rocksdb, update is just another put operation.
+         op_status = db_->Put(w_op, key, val);
+         thread->stats.FinishedOps(db, entries_per_batch_, kUpdate);
+        }
+         break;
+        case ycsbc::INSERT: {
+         Slice val = gen.Generate(FLAGS_value_size);
+         // In rocksdb, update is just another put operation.
+         op_status = db_->Put(w_op, key, val);
+         thread->stats.FinishedOps(db, entries_per_batch_, kWrite);
+        }
+         break;
+        case ycsbc::SCAN: {
+         Iterator *db_iter = db_->NewIterator(r_op);
+         db_iter->Seek(key);
+         int len = workload->scan_len_chooser_->Next();
+         for (int i = 0; db_iter->Valid() && i < len; i++) {
+          data = db_iter->value().ToString();
+          db_iter->Next();
+         }
+         thread->stats.FinishedOps(db, entries_per_batch_, kSeek);
+         delete db_iter;
+        }
+         break;
+        case ycsbc::READMODIFYWRITE: {
+         op_status = db_->Get(r_op, key, &data);
+         read_count++;
+         if (op_status.IsNotFound()) {
+          blind_updates++;
+         }
+         Slice val = gen.Generate(FLAGS_value_size);
+         op_status = db_->Put(w_op, key, val);
+         thread->stats.FinishedOps(db, entries_per_batch_, kUpdate);
+        }
+         break;
+        case ycsbc::DELETE: {
+         op_status = db_->Delete(w_op, key);
+         thread->stats.FinishedOps(db, entries_per_batch_, kDelete);
+        }
+         break;
+        case ycsbc::MAXOPTYPE:
+         throw ycsbc::utils::Exception(
+             "Operation request is not recognized!");
+       }
+      }
+      thread->stats.AddBytes(bytes);
+     }
+     thread->stats.ReportYCSBHist();
+    }
 
   };
 
@@ -1825,15 +1935,26 @@ int main(int argc, char **argv) {
    FLAGS_base_key = n;
   } else if (strncmp(argv[i], "--db=", 5) == 0) {
    FLAGS_db = argv[i] + 5;
+  } else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
+   FLAGS_db = argv[i] + 5;
+  } else if (sscanf(argv[i], "--running_num=%d%c", &n, &junk) == 1) {
+   FLAGS_db = argv[i] + 5;
   } else {
    fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
    exit(1);
   }
  }
 
+ if (std::string(FLAGS_benchmarks).find("ycsb_run") != std::string::npos) {
+  std::cout << "running ycsb, use existing db" << std::endl;
+  FLAGS_use_existing_db = true;
+ }
+
+
+ FLAGS_env = leveldb::Env::Default();
  // Choose a location for the test database if none given with --db=<path>
  if (FLAGS_db == NULL) {
-  leveldb::Env::Default()->GetTestDirectory(&default_db_path);
+  FLAGS_env->GetTestDirectory(&default_db_path);
   default_db_path += "/dbbench";
   FLAGS_db = default_db_path.c_str();
  }
