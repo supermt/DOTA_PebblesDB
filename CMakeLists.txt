@@ -140,6 +140,13 @@ target_sources(pebblesdb
         "${PROJECT_SOURCE_DIR}/util/options.cc"
         "${PROJECT_SOURCE_DIR}/util/status.cc"
         "${PROJECT_SOURCE_DIR}/port/port_posix.cc"
+        "${PROJECT_SOURCE_DIR}/util/testutil.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/acknowledged_counter_generator.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/basic_db.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/core_workload.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/db_factory.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/measurements.cc"
+        "${PROJECT_SOURCE_DIR}/ycsbcore/ycsbc.cc"
         )
 
 target_compile_definitions(pebblesdb
@@ -158,6 +165,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(pebblesdb Threads::Threads)
 
 message(STATUS "C++ flags:    " ${CMAKE_CXX_FLAGS})
+
 
 if (PEBBLESDB_BUILD_TESTS)
     enable_testing()
@@ -208,7 +216,7 @@ if (PEBBLESDB_BUILD_TESTS)
     pebblesdb_test("${PROJECT_SOURCE_DIR}/demo/installation_test.cc")
 endif (PEBBLESDB_BUILD_TESTS)
 
-if(PEBBLESDB_INSTALL)
+if (PEBBLESDB_INSTALL)
     include(GNUInstallDirs)
     install(TARGETS pebblesdb
             EXPORT pebblesdbTargets
@@ -234,11 +242,14 @@ if(PEBBLESDB_INSTALL)
             "${PROJECT_SOURCE_DIR}/${PEBBLESDB_PUBLIC_INCLUDE_DIR}/write_batch.h"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/pebblesdb
     )
-endif(PEBBLESDB_INSTALL)
+endif (PEBBLESDB_INSTALL)
 
+add_executable(db_bench "${PROJECT_SOURCE_DIR}/db/db_bench.cc")
+target_link_libraries(db_bench
+        pebblesdb)
 # Print out all the CMake variables
 get_cmake_property(_variableNames VARIABLES)
-list (SORT _variableNames)
+list(SORT _variableNames)
 foreach (_variableName ${_variableNames})
     message(STATUS "${_variableName}=${${_variableName}}")
-endforeach()
+endforeach ()

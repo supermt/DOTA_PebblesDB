@@ -16,6 +16,7 @@
 #include "pebblesdb/slice.h"
 #include "port/port.h"
 #include "util/string_builder.h"
+#include "port/port_posix.h"
 
 namespace leveldb {
 
