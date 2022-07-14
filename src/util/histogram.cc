@@ -113,6 +113,11 @@ namespace leveldb {
             "Min: %.4f  Median: %.4f  Max: %.4f\n",
             (num_ <= 0.0 ? 0.0 : min_), Median(), max_);
    r.append(buf);
+
+   snprintf(buf, sizeof(buf),
+            "P99: %.4f  P99.9: %.4f  P99.99: %.4f\n",
+            Percentile(99.0), Percentile(99.9), Percentile(99.99));
+   r.append(buf);
    r.append("------------------------------------------------------\n");
    const double mult = 100.0 / num_;
    double sum = 0;

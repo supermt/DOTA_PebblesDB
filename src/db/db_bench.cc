@@ -158,6 +158,8 @@ static uint64_t FLAGS_load_num = 25 * 1000 * 1000;
 static uint64_t FLAGS_running_num = 25 * 1000 * 1000;
 static std::string FLAGS_ycsb_workload = "ycsb_workload/workloadc";
 
+static bool FLAGS_regenbloomfilter = true;
+
 namespace leveldb {
   class Duration {
   public:
@@ -431,9 +433,10 @@ namespace leveldb {
        }
        AppendWithSpace(&extra, message_);
 
-       fprintf(stdout, "%-12s : %11.3f micros/op;%s%s\n",
+       fprintf(stdout, "%-12s : %11.3f micros/op;%8d op/sec%s%s\n",
                name.ToString().c_str(),
                seconds_ * 1e6 / done_,
+               (long) (done_ / seconds_),
                (extra.empty() ? "" : " "),
                extra.c_str());
        if (FLAGS_histogram) {
@@ -1002,6 +1005,7 @@ namespace leveldb {
        method = &Benchmark::YCSBLoader;
       } else if (name == Slice("ycsb_run")) {
        FLAGS_use_existing_db = true;
+       fresh_db = false;
        method = &Benchmark::YCSBRunner;
       } else if (name == Slice("fillseq")) {
        fresh_db = true;
@@ -1351,6 +1355,7 @@ namespace leveldb {
      options.max_open_files = FLAGS_open_files;
      options.block_size = FLAGS_block_size;
      options.filter_policy = filter_policy_;
+     options.regen_bloom_fiter = FLAGS_regenbloomfilter;
      Status s = DB::Open(options, FLAGS_db, &db_);
      if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());
@@ -1904,6 +1909,9 @@ int main(int argc, char **argv) {
   } else if (sscanf(argv[i], "--histogram=%d%c", &n, &junk) == 1 &&
              (n == 0 || n == 1)) {
    FLAGS_histogram = n;
+  } else if (sscanf(argv[i], "--regenbloomfilter=%d%c", &n, &junk) == 1 &&
+             (n == 0 || n == 1)) {
+   FLAGS_regenbloomfilter = n;
   } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
              (n == 0 || n == 1)) {
    FLAGS_use_existing_db = n;
@@ -1936,9 +1944,13 @@ int main(int argc, char **argv) {
   } else if (strncmp(argv[i], "--db=", 5) == 0) {
    FLAGS_db = argv[i] + 5;
   } else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
-   FLAGS_db = argv[i] + 5;
+   FLAGS_load_num = n;
   } else if (sscanf(argv[i], "--running_num=%d%c", &n, &junk) == 1) {
-   FLAGS_db = argv[i] + 5;
+   FLAGS_running_num = n;
+  } else if (sscanf(argv[i], "--load_duration=%d%c", &n, &junk) == 1) {
+   FLAGS_load_duration = n;
+  } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
+   FLAGS_duration = n;
   } else {
    fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
    exit(1);
