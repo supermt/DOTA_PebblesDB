@@ -1953,7 +1953,7 @@ int main(int argc, char **argv) {
    FLAGS_duration = n;
   } else {
    fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
-   exit(1);
+//   exit(1);
   }
  }
 
