@@ -160,6 +160,8 @@ static std::string FLAGS_ycsb_workload = "ycsb_workload/workloadc";
 
 static bool FLAGS_regenbloomfilter = true;
 
+static int FLAGS_key_size = 16;
+
 namespace leveldb {
   class Duration {
   public:
@@ -522,6 +524,7 @@ namespace leveldb {
     const FilterPolicy *filter_policy_;
     DB *db_;
     int num_;
+    int key_size_;
     int value_size_;
     int entries_per_batch_;
     WriteOptions write_options_;
@@ -533,7 +536,7 @@ namespace leveldb {
     }
 
     void PrintHeader() {
-     const int kKeySize = 16;
+     const int kKeySize = FLAGS_key_size;
      PrintEnvironment();
      fprintf(stdout, "Keys:       %d bytes each\n", kKeySize);
      fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
@@ -614,6 +617,7 @@ namespace leveldb {
                          : NULL),
           db_(NULL),
           num_(FLAGS_num),
+          key_size_(FLAGS_key_size),
           value_size_(FLAGS_value_size),
           entries_per_batch_(1),
           write_options_(),
@@ -1925,6 +1929,8 @@ int main(int argc, char **argv) {
    FLAGS_write_threads = n;
   } else if (sscanf(argv[i], "--read_threads=%d%c", &n, &junk) == 1) {
    FLAGS_read_threads = n;
+  } else if (sscanf(argv[i], "--key_size=%d%c", &n, &junk) == 1) {
+   FLAGS_key_size = n;
   } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
    FLAGS_value_size = n;
   } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
