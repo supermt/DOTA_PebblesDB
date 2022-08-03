@@ -160,8 +160,6 @@ static std::string FLAGS_ycsb_workload = "ycsb_workload/workloadc";
 
 static bool FLAGS_regenbloomfilter = true;
 
-static int FLAGS_key_size = 16;
-
 namespace leveldb {
   class Duration {
   public:
@@ -524,7 +522,6 @@ namespace leveldb {
     const FilterPolicy *filter_policy_;
     DB *db_;
     int num_;
-    int key_size_;
     int value_size_;
     int entries_per_batch_;
     WriteOptions write_options_;
@@ -536,7 +533,7 @@ namespace leveldb {
     }
 
     void PrintHeader() {
-     const int kKeySize = FLAGS_key_size;
+     const int kKeySize = 16;
      PrintEnvironment();
      fprintf(stdout, "Keys:       %d bytes each\n", kKeySize);
      fprintf(stdout, "Values:     %d bytes each (%d bytes after compression)\n",
@@ -617,7 +614,6 @@ namespace leveldb {
                          : NULL),
           db_(NULL),
           num_(FLAGS_num),
-          key_size_(FLAGS_key_size),
           value_size_(FLAGS_value_size),
           entries_per_batch_(1),
           write_options_(),
@@ -981,6 +977,23 @@ namespace leveldb {
      int num_read_threads = FLAGS_read_threads;
      int num_threads = FLAGS_threads;
 
+
+    while (benchmarks !=NULL){
+       const char *sep = strchr(benchmarks, ',');
+      Slice name;
+      if (sep == NULL) {
+       name = benchmarks;
+       benchmarks = NULL;
+      } else {
+       name = Slice(benchmarks, sep - benchmarks);
+       benchmarks = sep + 1;
+      std::cout << name.ToString();
+      }
+      exit(-1);
+
+    }
+
+
      while (benchmarks != NULL) {
       const char *sep = strchr(benchmarks, ',');
       Slice name;
@@ -991,6 +1004,7 @@ namespace leveldb {
        name = Slice(benchmarks, sep - benchmarks);
        benchmarks = sep + 1;
       }
+      std::cout << name.ToString();
 
       // Reset parameters that may be overriddden bwlow
       num_ = FLAGS_num;
@@ -1006,6 +1020,7 @@ namespace leveldb {
       if (name == Slice("ycsb")) {
        method = &Benchmark::YCSBIntegrate;
       } else if (name == Slice("ycsb_load")) {
+       fresh_db = true;
        method = &Benchmark::YCSBLoader;
       } else if (name == Slice("ycsb_run")) {
        FLAGS_use_existing_db = true;
@@ -1747,6 +1762,7 @@ namespace leveldb {
     }
 
     void InitWorkload(ycsbc::CoreWorkload &wl, ycsbc::utils::Properties &props) {
+        std::cout <<"ycsb workload is :"<< FLAGS_ycsb_workload <<std::endl;
      if (!FLAGS_ycsb_workload.empty()) {
       std::ifstream input(FLAGS_ycsb_workload);
       props.Load(input);
@@ -1929,8 +1945,6 @@ int main(int argc, char **argv) {
    FLAGS_write_threads = n;
   } else if (sscanf(argv[i], "--read_threads=%d%c", &n, &junk) == 1) {
    FLAGS_read_threads = n;
-  } else if (sscanf(argv[i], "--key_size=%d%c", &n, &junk) == 1) {
-   FLAGS_key_size = n;
   } else if (sscanf(argv[i], "--value_size=%d%c", &n, &junk) == 1) {
    FLAGS_value_size = n;
   } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
@@ -1949,7 +1963,10 @@ int main(int argc, char **argv) {
    FLAGS_base_key = n;
   } else if (strncmp(argv[i], "--db=", 5) == 0) {
    FLAGS_db = argv[i] + 5;
-  } else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
+  } else if (strncmp(argv[i],"--ycsb_workload=", strlen("--ycsb_workload=")) == 0) {
+   FLAGS_ycsb_workload = argv[i] + strlen("--ycsb_workload=");
+   std::cout <<FLAGS_ycsb_workload << std::endl;
+  }else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
    FLAGS_load_num = n;
   } else if (sscanf(argv[i], "--running_num=%d%c", &n, &junk) == 1) {
    FLAGS_running_num = n;
@@ -1958,7 +1975,7 @@ int main(int argc, char **argv) {
   } else if (sscanf(argv[i], "--duration=%d%c", &n, &junk) == 1) {
    FLAGS_duration = n;
   } else {
-   fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
+//   fprintf(stderr, "Invalid flag '%s'\n", argv[i]);
 //   exit(1);
   }
  }
@@ -1978,6 +1995,7 @@ int main(int argc, char **argv) {
  }
 
  leveldb::Benchmark benchmark;
+ std::cout << "start running " <<std::endl;
  benchmark.Run();
  return 0;
 }
