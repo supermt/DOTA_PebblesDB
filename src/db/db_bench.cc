@@ -289,7 +289,7 @@ namespace leveldb {
       int next_report_;
       int64_t bytes_;
       double last_op_finish_;
-      Histogram hist_;
+      HistogramImpl hist_;
       std::string message_;
       std::unordered_map<OperationType, std::shared_ptr<Histogram>,
           std::hash<unsigned char>>
@@ -377,13 +377,13 @@ namespace leveldb {
         uint64_t micros = now - last_op_finish_;
 
         if (hist_s.find(op_type) == hist_s.end()) {
-         auto hist_temp = std::make_shared<Histogram>();
+         auto hist_temp = std::make_shared<HistogramImpl>();
          hist_s.insert({op_type, std::move(hist_temp)});
         }
         hist_s[op_type]->Add(micros);
 
         if (micros > 20000) {
-         fprintf(stderr, "long op: %lld micros%30s\r", micros, "");
+         fprintf(stderr, "long op: %ld micros%30s\r", micros, "");
          fflush(stderr);
         }
         last_op_finish_ = now;
@@ -407,7 +407,7 @@ namespace leveldb {
          next_report_ += 50000;
         else
          next_report_ += 100000;
-        fprintf(stderr, "... finished %lld ops%30s\r", done_, "");
+        fprintf(stderr, "... finished %d ops%30s\r", done_, "");
         fflush(stderr);
        }
       }
@@ -433,7 +433,7 @@ namespace leveldb {
        }
        AppendWithSpace(&extra, message_);
 
-       fprintf(stdout, "%-12s : %11.3f micros/op;%8d op/sec%s%s\n",
+       fprintf(stdout, "%-12s : %11.3f micros/op;%8ld op/sec%s%s\n",
                name.ToString().c_str(),
                seconds_ * 1e6 / done_,
                (long) (done_ / seconds_),
@@ -976,22 +976,6 @@ namespace leveldb {
      int num_write_threads = FLAGS_write_threads;
      int num_read_threads = FLAGS_read_threads;
      int num_threads = FLAGS_threads;
-
-
-    while (benchmarks !=NULL){
-       const char *sep = strchr(benchmarks, ',');
-      Slice name;
-      if (sep == NULL) {
-       name = benchmarks;
-       benchmarks = NULL;
-      } else {
-       name = Slice(benchmarks, sep - benchmarks);
-       benchmarks = sep + 1;
-      std::cout << name.ToString();
-      }
-      exit(-1);
-
-    }
 
 
      while (benchmarks != NULL) {
@@ -1762,7 +1746,7 @@ namespace leveldb {
     }
 
     void InitWorkload(ycsbc::CoreWorkload &wl, ycsbc::utils::Properties &props) {
-        std::cout <<"ycsb workload is :"<< FLAGS_ycsb_workload <<std::endl;
+     std::cout << "ycsb workload is :" << FLAGS_ycsb_workload << std::endl;
      if (!FLAGS_ycsb_workload.empty()) {
       std::ifstream input(FLAGS_ycsb_workload);
       props.Load(input);
@@ -1963,10 +1947,10 @@ int main(int argc, char **argv) {
    FLAGS_base_key = n;
   } else if (strncmp(argv[i], "--db=", 5) == 0) {
    FLAGS_db = argv[i] + 5;
-  } else if (strncmp(argv[i],"--ycsb_workload=", strlen("--ycsb_workload=")) == 0) {
+  } else if (strncmp(argv[i], "--ycsb_workload=", strlen("--ycsb_workload=")) == 0) {
    FLAGS_ycsb_workload = argv[i] + strlen("--ycsb_workload=");
-   std::cout <<FLAGS_ycsb_workload << std::endl;
-  }else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
+   std::cout << FLAGS_ycsb_workload << std::endl;
+  } else if (sscanf(argv[i], "--load_num=%d%c", &n, &junk) == 1) {
    FLAGS_load_num = n;
   } else if (sscanf(argv[i], "--running_num=%d%c", &n, &junk) == 1) {
    FLAGS_running_num = n;
@@ -1980,11 +1964,6 @@ int main(int argc, char **argv) {
   }
  }
 
- if (std::string(FLAGS_benchmarks).find("ycsb_run") != std::string::npos) {
-  std::cout << "running ycsb, use existing db" << std::endl;
-  FLAGS_use_existing_db = true;
- }
-
 
  FLAGS_env = leveldb::Env::Default();
  // Choose a location for the test database if none given with --db=<path>
@@ -1995,7 +1974,7 @@ int main(int argc, char **argv) {
  }
 
  leveldb::Benchmark benchmark;
- std::cout << "start running " <<std::endl;
+ std::cout << "start running " << std::endl;
  benchmark.Run();
  return 0;
 }
